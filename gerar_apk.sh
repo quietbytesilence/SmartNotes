@@ -33,21 +33,29 @@ cd "$SCRIPT_DIR"
 
 # ─── 3. Baixar Gradle Wrapper JAR (se faltar) ──────────────
 if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-    info "Baixando Gradle Wrapper JAR..."
-    WRAPPER_JAR="https://raw.githubusercontent.com/gradle/gradle/v8.5/gradle/wrapper/gradle-wrapper.jar"
+    info "Baixando Gradle Wrapper JAR do Maven Central..."
+    # URL confiável: Maven Central
+    MAVEN_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/8.5/gradle-wrapper-8.5.jar"
+    
     if command -v curl &>/dev/null; then
-        curl -sL "$WRAPPER_JAR" -o gradle/wrapper/gradle-wrapper.jar
+        HTTP_CODE=$(curl -sL -o gradle/wrapper/gradle-wrapper.jar -w "%{http_code}" "$MAVEN_URL")
     elif command -v wget &>/dev/null; then
-        wget -q "$WRAPPER_JAR" -O gradle/wrapper/gradle-wrapper.jar
+        wget -q "$MAVEN_URL" -O gradle/wrapper/gradle-wrapper.jar
+        HTTP_CODE=$?
     else
-        # Fallback: baixar o Gradle completo e extrair só o JAR
-        warn "Baixando Gradle completo para extrair o wrapper..."
+        erro "Nem curl nem wget disponíveis. Instale um deles."
+        exit 1
+    fi
+    
+    # Verificar se baixou algo válido (não HTML)
+    if [ "$HTTP_CODE" != "200" ] || head -c 100 gradle/wrapper/gradle-wrapper.jar 2>/dev/null | grep -q "html"; then
+        warn "Maven Central falhou. Baixando Gradle completo para extrair o wrapper..."
         curl -sL "https://services.gradle.org/distributions/gradle-8.5-bin.zip" -o /tmp/gradle.zip
         unzip -q -o /tmp/gradle.zip -d /tmp/
         cp /tmp/gradle-8.5/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-        rm -f /tmp/gradle.zip
-        rm -rf /tmp/gradle-8.5
+        rm -rf /tmp/gradle-8.5 /tmp/gradle.zip
     fi
+    
     chmod +x gradlew
 fi
 
@@ -65,10 +73,11 @@ else
     SDK_DIR="$HOME/Android/Sdk"
     export ANDROID_HOME="$SDK_DIR"
     
-    if [ ! -d "$SDK_DIR" ]; then
+    if [ ! -f "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+        warn "SDK incompleto ou estrutura incorreta. Reinstalando..."
+        rm -rf "$SDK_DIR/cmdline-tools" 2>/dev/null || true
         info "Instalando Android SDK Command Line Tools em $SDK_DIR..."
         
-        # Detectar arquitetura
         ARCH="linux"
         [[ "$(uname)" == "Darwin" ]] && ARCH="mac"
         
@@ -78,20 +87,12 @@ else
         cd /tmp
         info "Baixando Android Command Line Tools..."
         curl -sL "$CMDLINE_URL" -o cmdline-tools.zip
-        unzip -q cmdline-tools.zip -d "$SDK_DIR"
+        unzip -q cmdline-tools.zip
         rm -f cmdline-tools.zip
         
-        # Organizar no formato que o sdkmanager espera
+        # O zip extrai para cmdline-tools/ — mover para cmdline-tools/latest/
         mkdir -p "$SDK_DIR/cmdline-tools"
-        if [ -d "$SDK_DIR/cmdline-tools/bin" ]; then
-            mv "$SDK_DIR/cmdline-tools" "$SDK_DIR/cmdline-tools/latest" 2>/dev/null || true
-        elif [ -d "$SDK_DIR/latest/bin" ]; then
-            mv "$SDK_DIR/latest" "$SDK_DIR/cmdline-tools/latest" 2>/dev/null || true
-        else
-            mkdir -p "$SDK_DIR/cmdline-tools/latest"
-            mv "$SDK_DIR/bin" "$SDK_DIR/cmdline-tools/latest/" 2>/dev/null || true
-            mv "$SDK_DIR/lib" "$SDK_DIR/cmdline-tools/latest/" 2>/dev/null || true
-        fi
+        mv cmdline-tools "$SDK_DIR/cmdline-tools/latest"
         
         cd "$SCRIPT_DIR"
     fi
@@ -104,19 +105,15 @@ echo "sdk.dir=$SDK_DIR" > local.properties
 info "local.properties criado: sdk.dir=$SDK_DIR"
 
 # ─── 5. Aceitar licenças e instalar plataformas ────────────
-if command -v sdkmanager &>/dev/null; then
+if [ -f "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+    SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
     info "Aceitando licenças do Android SDK..."
-    yes | sdkmanager --licenses >/dev/null 2>&1 || true
+    yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
     
     info "Instalando plataformas necessárias..."
-    sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+    "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
 else
-    warn "sdkmanager não encontrado. Tentando localizar..."
-    SDKMANAGER=$(find "$SDK_DIR" -name sdkmanager -type f 2>/dev/null | head -1)
-    if [ -n "$SDKMANAGER" ]; then
-        yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-        "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
-    fi
+    warn "sdkmanager não encontrado. Tentando continuar mesmo assim..."
 fi
 
 # ─── 6. Build ──────────────────────────────────────────────
